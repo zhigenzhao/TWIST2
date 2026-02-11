@@ -42,8 +42,8 @@ def parse_args():
                         help="Path to a single session dir containing episode_XXXX/ folders")
     parser.add_argument("--task_name", type=str, default="g1 task",
                         help="Task description string for all episodes")
-    parser.add_argument("--output_dir", type=str, required=True,
-                        help="Output LeRobot dataset root directory")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Output LeRobot dataset root directory (default: HuggingFace cache dir)")
     parser.add_argument("--repo_id", type=str, required=True,
                         help="HuggingFace repo ID (e.g. user/dataset_name)")
     parser.add_argument("--fps", type=int, default=60,
@@ -136,7 +136,7 @@ def main():
     data_dir = Path(args.data_dir)
     if not data_dir.is_absolute():
         data_dir = Path.cwd() / data_dir
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir) if args.output_dir else None
 
     # Discover episodes
     episode_dirs = sorted([
@@ -186,7 +186,7 @@ def main():
     # Create dataset
     dataset = LeRobotDataset.create(
         repo_id=args.repo_id,
-        root=str(output_dir),
+        root=str(output_dir) if output_dir else None,
         robot_type="unitree_g1",
         fps=args.fps,
         features=features,
@@ -249,7 +249,7 @@ def main():
     print(f"  Image size: {height}x{width}")
     print(f"  Action mode: {args.action_mode}")
     print(f"  Include hand: {args.include_hand}")
-    print(f"  Output:     {output_dir}")
+    print(f"  Output:     {output_dir or 'HuggingFace cache dir'}")
     print("=" * 60)
 
 
