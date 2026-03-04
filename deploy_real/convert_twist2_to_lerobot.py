@@ -2,7 +2,7 @@
 Convert TWIST2 demonstration data to LeRobot v2.0 dataset format.
 
 Supports two action modes:
-  - high_level: teleop target poses (action_body + optional hand/neck)
+  - high_level: teleop target poses (action_body + optional hand)
   - low_level:  motor commands from RL policy (action_low_level + optional hand)
 
 Usage:
@@ -27,12 +27,9 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 # ---------- Dimension constants ----------
 DIM_STATE_BODY = 34       # ang_vel(3) + roll_pitch(2) + dof_pos(29)
 DIM_STATE_HAND = 7        # per hand
-DIM_STATE_NECK = 2
-DIM_STATE = DIM_STATE_BODY + DIM_STATE_HAND * 2 + DIM_STATE_NECK  # 50
 
 DIM_ACTION_BODY = 35      # high-level teleop target
 DIM_ACTION_HAND = 7       # per hand
-DIM_ACTION_NECK = 2
 DIM_ACTION_LOW_LEVEL = 29  # low-level motor commands
 
 
@@ -51,11 +48,10 @@ def parse_args():
     parser.add_argument("--action_mode", type=str, required=True, choices=["high_level", "low_level"],
                         help="Action mode: high_level (teleop targets) or low_level (motor commands)")
 
-    # Hand inclusion defaults differ by mode — handled after parsing
-    parser.add_argument("--include_hand", action="store_true", dest="include_hand", default=None,
-                        help="Include hand/neck in action vector")
+    parser.add_argument("--include_hand", action="store_true", dest="include_hand", default=False,
+                        help="Include hand joints in state and action vectors")
     parser.add_argument("--no_include_hand", action="store_false", dest="include_hand",
-                        help="Exclude hand/neck from action vector")
+                        help="Exclude hand joints from state and action vectors")
 
     parser.add_argument("--use_videos", action="store_true", dest="use_videos", default=True,
                         help="Use video storage (default)")
@@ -68,24 +64,26 @@ def parse_args():
     parser.add_argument("--image_writer_threads", type=int, default=4)
 
     args = parser.parse_args()
-
-    # Set include_hand default based on action_mode
-    if args.include_hand is None:
-        args.include_hand = (args.action_mode == "high_level")
-
     return args
+
+
+def get_state_dim(include_hand: bool) -> int:
+    dim = DIM_STATE_BODY
+    if include_hand:
+        dim += DIM_STATE_HAND * 2
+    return dim
 
 
 def get_action_dim(action_mode: str, include_hand: bool) -> int:
     if action_mode == "high_level":
         dim = DIM_ACTION_BODY
         if include_hand:
-            dim += DIM_ACTION_HAND * 2 + DIM_ACTION_NECK  # +16
+            dim += DIM_ACTION_HAND * 2
         return dim
     else:  # low_level
         dim = DIM_ACTION_LOW_LEVEL
         if include_hand:
-            dim += DIM_ACTION_HAND * 2  # +14
+            dim += DIM_ACTION_HAND * 2
         return dim
 
 
@@ -103,13 +101,14 @@ def safe_array(value, expected_dim: int, field_name: str, frame_idx: int) -> np.
     return arr
 
 
-def build_state(frame: dict, idx: int) -> np.ndarray:
-    """Build 50d observation state vector."""
+def build_state(frame: dict, idx: int, include_hand: bool) -> np.ndarray:
+    """Build observation state vector (34d without hand, 48d with hand)."""
     state_body = safe_array(frame.get("state_body"), DIM_STATE_BODY, "state_body", idx)
-    hand_left = safe_array(frame.get("state_hand_left"), DIM_STATE_HAND, "state_hand_left", idx)
-    hand_right = safe_array(frame.get("state_hand_right"), DIM_STATE_HAND, "state_hand_right", idx)
-    neck = safe_array(frame.get("state_neck"), DIM_STATE_NECK, "state_neck", idx)
-    return np.concatenate([state_body, hand_left, hand_right, neck])
+    if include_hand:
+        hand_left = safe_array(frame.get("state_hand_left"), DIM_STATE_HAND, "state_hand_left", idx)
+        hand_right = safe_array(frame.get("state_hand_right"), DIM_STATE_HAND, "state_hand_right", idx)
+        return np.concatenate([state_body, hand_left, hand_right])
+    return state_body
 
 
 def build_action(frame: dict, idx: int, action_mode: str, include_hand: bool) -> np.ndarray:
@@ -119,8 +118,7 @@ def build_action(frame: dict, idx: int, action_mode: str, include_hand: bool) ->
         if include_hand:
             hand_left = safe_array(frame.get("action_hand_left"), DIM_ACTION_HAND, "action_hand_left", idx)
             hand_right = safe_array(frame.get("action_hand_right"), DIM_ACTION_HAND, "action_hand_right", idx)
-            neck = safe_array(frame.get("action_neck"), DIM_ACTION_NECK, "action_neck", idx)
-            action = np.concatenate([action, hand_left, hand_right, neck])
+            action = np.concatenate([action, hand_left, hand_right])
     else:  # low_level
         action = safe_array(frame.get("action_low_level"), DIM_ACTION_LOW_LEVEL, "action_low_level", idx)
         if include_hand:
@@ -158,10 +156,11 @@ def main():
     height, width = first_img.shape[:2]
     print(f"Image dimensions: {height}x{width}")
 
-    # Compute action dim
+    # Compute dims
+    state_dim = get_state_dim(args.include_hand)
     action_dim = get_action_dim(args.action_mode, args.include_hand)
-    print(f"Action mode: {args.action_mode}, include_hand: {args.include_hand}, action_dim: {action_dim}")
-    print(f"State dim: {DIM_STATE}")
+    print(f"Action mode: {args.action_mode}, include_hand: {args.include_hand}")
+    print(f"State dim: {state_dim}, Action dim: {action_dim}")
 
     # Define features
     vision_dtype = "video" if args.use_videos else "image"
@@ -173,7 +172,7 @@ def main():
         },
         "observation.state": {
             "dtype": "float32",
-            "shape": (DIM_STATE,),
+            "shape": (state_dim,),
             "names": ["state"],
         },
         "action": {
@@ -217,7 +216,7 @@ def main():
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
             # Build state and action
-            state = build_state(frame, idx)
+            state = build_state(frame, idx, args.include_hand)
             action = build_action(frame, idx, args.action_mode, args.include_hand)
 
             frame_data = {
@@ -244,7 +243,7 @@ def main():
     print("Conversion complete!")
     print(f"  Episodes:   {len(episode_dirs)}")
     print(f"  Frames:     {total_frames}")
-    print(f"  State dim:  {DIM_STATE}")
+    print(f"  State dim:  {state_dim}")
     print(f"  Action dim: {action_dim}")
     print(f"  Image size: {height}x{width}")
     print(f"  Action mode: {args.action_mode}")
